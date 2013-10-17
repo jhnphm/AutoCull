@@ -1,0 +1,6 @@
+Run make
+
+./autocull [RAW Files]
+
+The higher the number, the more high frequency energy is in the image, and the
+image should be theoretically sharper.

@@ -26,58 +26,112 @@ void Burst::addFileName(const string& filename){
     burst_files.push_back(filename);
 }
 
-string Burst::getBest(){
-    for(auto& filename: burst_files){
-        cout << filename << ": ";
+static void unzig(unsigned *sum_coeff_zag, vector<unsigned> &sum_coeff){
+    JDIMENSION index = 0, zag_c = 0, zag_l = 0;
+    bool asc = false, zag_l_asc = true;
 
-        //Get preview image 
-        Exiv2::Image::AutoPtr image = Exiv2::ImageFactory::open(filename);
-        image->readMetadata();
-        Exiv2::PreviewManager preview_m = Exiv2::PreviewManager(*image);
-        Exiv2::PreviewPropertiesList preview_pl = preview_m.getPreviewProperties();
-        /* Decompress jpeg and get average dct coefficient */
-        if(!preview_pl.empty()){
-            Exiv2::PreviewImage pimage = preview_m.getPreviewImage(preview_pl.back());
-            int sum_coeff[DCTSIZE2];
-            struct jpeg_decompress_struct cinfo;
-            struct jpeg_error_mgr jerr;
-
-            //Initialize jpeg stuff
-            cinfo.err = jpeg_std_error(&jerr);
-            jpeg_create_decompress(&cinfo);
-            jpeg_mem_src(&cinfo, (unsigned char *)pimage.pData(), pimage.size());
-            jpeg_read_header(&cinfo, TRUE);
-
-            //Read out coefficients
-            jvirt_barray_ptr *coeffs = jpeg_read_coefficients(&cinfo);
-
-            for(JDIMENSION i = 0; i < DCTSIZE2; i++){
-                sum_coeff[i] = 0;
-            }
-
-            //Sum up all block coefficients
-            for(JDIMENSION i = 0; i < cinfo.comp_info[Y].height_in_blocks; i++){
-                JBLOCKARRAY blockrow = (cinfo.mem->access_virt_barray)(
-                        (j_common_ptr)&cinfo, coeffs[Y], 0,
-                        (JDIMENSION)1,
-                        FALSE
-                        );
-                for(JDIMENSION j = 0; j < cinfo.comp_info[Y].width_in_blocks; j++){
-                    for(JDIMENSION k = 0; k < DCTSIZE2; k++){
-                        sum_coeff[k] += abs(blockrow[i][j][k]);
-                    }
+    for(JDIMENSION i = 0; i < DCTSIZE2; i++){
+        sum_coeff.push_back(sum_coeff_zag[index]);
+        zag_c++;
+        if(zag_c > zag_l){
+            zag_c = 0;
+            asc = !asc;
+            if(zag_l_asc && zag_l <  DCTSIZE -1){
+                zag_l++;
+                if(asc){
+                    index += 1;
+                }else{
+                    index += DCTSIZE;
+                }
+            }else{
+                zag_l_asc = false;
+                zag_l--;
+                if(asc){
+                    index += DCTSIZE;
+                }else{
+                    index += 1;
                 }
             }
-            jpeg_finish_decompress(&cinfo);
-            jpeg_destroy_decompress(&cinfo);
-
-
-            for(JDIMENSION i = 0; i < DCTSIZE2-1; i++){
-                cout << sum_coeff[i] << ", ";
+        }else{
+            if(asc){
+                index += DCTSIZE-1;
+            }else{
+                index -= (DCTSIZE-1);
             }
-            cout << sum_coeff[DCTSIZE2-1] << endl;
+        }
+    }
+}
+
+unique_ptr<vector<unsigned>> get_coefficients(string filename){
+    unique_ptr<vector<unsigned>> sum_coeff(new vector<unsigned>);
+    //Get preview image 
+    Exiv2::Image::AutoPtr image = Exiv2::ImageFactory::open(filename);
+    image->readMetadata();
+    Exiv2::PreviewManager preview_m = Exiv2::PreviewManager(*image);
+    Exiv2::PreviewPropertiesList preview_pl = preview_m.getPreviewProperties();
+    /* Decompress jpeg and get average dct coefficient */
+    if(!preview_pl.empty()){
+        Exiv2::PreviewImage pimage = preview_m.getPreviewImage(preview_pl.back());
+        unsigned sum_coeff_zag[DCTSIZE2];
+        struct jpeg_decompress_struct cinfo;
+        struct jpeg_error_mgr jerr;
+
+        //Initialize jpeg stuff
+        cinfo.err = jpeg_std_error(&jerr);
+        jpeg_create_decompress(&cinfo);
+        jpeg_mem_src(&cinfo, (unsigned char *)pimage.pData(), pimage.size());
+        jpeg_read_header(&cinfo, TRUE);
+
+        //Read out coefficients
+        jvirt_barray_ptr *coeffs = jpeg_read_coefficients(&cinfo);
+
+        for(JDIMENSION i = 0; i < DCTSIZE2; i++){
+            sum_coeff_zag[i] = 0;
         }
 
+        //Sum up all block coefficients
+        for(JDIMENSION i = 0; i < cinfo.comp_info[Y].height_in_blocks; i++){
+            JBLOCKARRAY blockrow = (cinfo.mem->access_virt_barray)(
+                    (j_common_ptr)&cinfo, coeffs[Y], 0,
+                    (JDIMENSION)1,
+                    FALSE
+                    );
+            for(JDIMENSION j = 0; j < cinfo.comp_info[Y].width_in_blocks; j++){
+                for(JDIMENSION k = 0; k < DCTSIZE2; k++){
+                    sum_coeff_zag[k] += abs(blockrow[i][j][k]);
+                }
+            }
+        }
+        jpeg_finish_decompress(&cinfo);
+        jpeg_destroy_decompress(&cinfo);
+
+        /* Unzigzag coefficients */
+        unzig(sum_coeff_zag, *sum_coeff);
+    }
+    return sum_coeff;
+}
+
+string Burst::getBest(){
+    for(auto& filename: burst_files){
+        unique_ptr<vector<unsigned>> sum_coeff = get_coefficients(filename);
+        cout << filename << ": ";
+
+
+        /* sum hf component energies */{
+            unsigned sum = 0;
+            typedef vector<unsigned>::size_type v_sz;
+            v_sz size = sum_coeff->size();
+            for(v_sz i = size/2; i < size; i++){
+                sum += (*sum_coeff)[i];
+            }
+            cout << sum << endl;
+        }
+
+
+        //for(vector<unsigned>::size_type i = 0; i < size; i++){
+        //    cout << (*sum_coeff)[i] << ", ";
+        //}
+        //cout << (*sum_coeff)[size-1] << endl; 
     }
     return "";
 }
@@ -114,9 +168,9 @@ int main(int argc, char **argv){
     }
 
     for(auto& i: bursts){
-        cout << "----" << endl;
+        cout <<  endl;
         i.getBest();
-        cout << "----" << endl;
+        cout <<  endl;
     }
     return 0;
 
