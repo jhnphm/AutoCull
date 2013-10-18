@@ -2,8 +2,11 @@
 #include <memory> 
 #include <ctime>
 #include <string.h>
+#include <fstream>
+#include <sstream>
 //#pragma GCC diagnostic ignored "-Wfloat-equal".
 #include <exiv2/exiv2.hpp>
+#include <exiv2/xmp.hpp>
 #include <jpeglib.h>
 
 #define Y 0
@@ -13,20 +16,32 @@
 
 using namespace std;
 
-class Burst{
+class Burst{/*{{{*/
     private:
         vector<string> burst_files;
-        string best;
+        vector<vector<unsigned>> dct_coeff_sums;
+        vector<unsigned> hf_energies;
+        void getCoefficients(const string& filename);
     public:
         void addFileName(const string& filename);
-        std::string getBest();
+        const string& getBest();
+        const vector<string>& getBurstFiles();
 };
-
-void Burst::addFileName(const string& filename){
+/*{{{*/
+/**
+ * Adds file to burst
+ * @param filename Filename to add
+ */
+void Burst::addFileName(const string& filename){/*{{{*/
     burst_files.push_back(filename);
-}
+}/*}}}*/
 
-static void unzig(unsigned *sum_coeff_zag, vector<unsigned> &sum_coeff){
+/**
+ * Unzigzags DCT coefficients in block
+ * @param sum_coeff_zag Src
+ * @param sum_coeff Dest
+ */
+static void unzig(unsigned *sum_coeff_zag, vector<unsigned>& sum_coeff){/*{{{*/
     JDIMENSION index = 0, zag_c = 0, zag_l = 0;
     bool asc = false, zag_l_asc = true;
 
@@ -60,10 +75,17 @@ static void unzig(unsigned *sum_coeff_zag, vector<unsigned> &sum_coeff){
             }
         }
     }
-}
+}/*}}}*/
 
-unique_ptr<vector<unsigned>> get_coefficients(string filename){
-    unique_ptr<vector<unsigned>> sum_coeff(new vector<unsigned>);
+/**
+ * Gets sum of DCT coefficients and pushes them into this->dct_coeff_sums
+ *
+ * TODO Fail gracefully if thumbnail not openable
+ * Actually check if thumbnail is available and actually JPEG data
+ *
+ * @param filename File to extract DCT coefficients
+ */
+void Burst::getCoefficients(const string& filename){/*{{{*/
     //Get preview image 
     Exiv2::Image::AutoPtr image = Exiv2::ImageFactory::open(filename);
     image->readMetadata();
@@ -106,37 +128,87 @@ unique_ptr<vector<unsigned>> get_coefficients(string filename){
         jpeg_destroy_decompress(&cinfo);
 
         /* Unzigzag coefficients */
-        unzig(sum_coeff_zag, *sum_coeff);
+        dct_coeff_sums.emplace_back();
+        unzig(sum_coeff_zag, dct_coeff_sums.back());
     }
-    return sum_coeff;
-}
+}/*}}}*/
 
-string Burst::getBest(){
-    for(auto& filename: burst_files){
-        unique_ptr<vector<unsigned>> sum_coeff = get_coefficients(filename);
-        cout << filename << ": ";
-
-
-        /* sum hf component energies */{
+/**
+ * Returns filename of sharpest image in burst
+ * @return Sharpest image
+ */
+const string& Burst::getBest(){/*{{{*/
+    typedef vector<unsigned>::size_type v_sz;
+    if(dct_coeff_sums.size() != burst_files.size()){
+        for(auto& filename: burst_files){
+            getCoefficients(filename);
+            // sum hf component energies
             unsigned sum = 0;
-            typedef vector<unsigned>::size_type v_sz;
-            v_sz size = sum_coeff->size();
+            vector<unsigned>& dct_coeffs = dct_coeff_sums.back();
+            v_sz size = dct_coeffs.size();
             for(v_sz i = size/2; i < size; i++){
-                sum += (*sum_coeff)[i];
+                sum += dct_coeffs[i];
             }
-            cout << sum << endl;
+            hf_energies.push_back(sum);
         }
-
-
-        //for(vector<unsigned>::size_type i = 0; i < size; i++){
-        //    cout << (*sum_coeff)[i] << ", ";
-        //}
-        //cout << (*sum_coeff)[size-1] << endl; 
     }
-    return "";
+    v_sz best_index = 0;
+    for(v_sz i = 0; i < burst_files.size(); i++){
+        if(hf_energies[i] > hf_energies[best_index]){
+            best_index = i;
+        }
+    }
+    
+    return this->burst_files[best_index];
+}/*}}}*/
+
+/**
+ * Returns list of files in burst
+ * @return List of files in burst
+ */
+const vector<string>& Burst::getBurstFiles(){/*{{{*/
+    return this->burst_files;
+}/*}}}*//*}}}*/
+/*}}}*/
+
+static void write_xmp(const string& filename){
+    const string keyStr = "Xmp.darktable.colorlabels";
+    const string valStr = "0";
+
+    Exiv2::XmpProperties::registerNs("http://darktable.sf.net/", "darktable");
+
+    Exiv2::XmpKey  key = Exiv2::XmpKey(keyStr);
+    Exiv2::Value::AutoPtr value = Exiv2::Value::create(Exiv2::xmpText);
+    Exiv2::XmpData data;
+    value->read(valStr);
+
+    /* Read in existing data */{
+        ifstream fin;
+        stringstream buf;
+        fin.open(filename+".xmp",ios::binary);
+        buf << fin.rdbuf();
+        fin.close();
+        Exiv2::XmpParser::decode(data, buf.str());
+    }
+
+    /* Exit if xmp exists w/ label */
+    for(auto& i: data){
+        if(i.key() == keyStr && i.toString() == valStr ){
+            return;
+        }
+    }
+
+    data.add(key,& *value);
+
+    /* Write out data */{
+        ofstream fout;
+        string buf;
+        fout.open(filename+".xmp",ios::binary);
+        Exiv2::XmpParser::encode(buf, data);
+        fout << buf;
+        fout.close();
+    }
 }
-
-
 
 int main(int argc, char **argv){
     vector<Burst> bursts = vector<Burst>();
@@ -148,9 +220,20 @@ int main(int argc, char **argv){
 
         //Open file
         Exiv2::Image::AutoPtr image = Exiv2::ImageFactory::open(argv[i]);
-        image->readMetadata();
-        Exiv2::ExifData &exif_data = image->exifData();
 
+        //Skip file if open fails
+        if(image.get() == 0){
+            continue;
+        }
+
+        image->readMetadata();
+        Exiv2::ExifData& exif_data = image->exifData();
+        
+        //Skip if no exif data
+        if(exif_data.empty()){
+            continue;
+        }
+                
         //Get datetime and convert to long
         datetime = exif_data.findKey(Exiv2::ExifKey("Exif.Photo.DateTimeOriginal"))->toString();
         strptime(datetime.c_str(),"%Y:%m:%d %H:%M:%S",&tm);
@@ -168,10 +251,19 @@ int main(int argc, char **argv){
     }
 
     for(auto& i: bursts){
-        cout <<  endl;
-        i.getBest();
-        cout <<  endl;
+        const string& best = i.getBest();
+        for(auto& j: i.getBurstFiles()){
+            if(j == best){
+                write_xmp(j);
+                cout << j << "*" <<endl;
+            }else{
+                cout << j << endl;
+            }
+        }
+        cout <<endl;
     }
     return 0;
 
 }
+
+// vim:fdm=marker:
