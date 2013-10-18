@@ -172,10 +172,13 @@ const vector<string>& Burst::getBurstFiles(){/*{{{*/
 /*}}}*/
 
 static void write_xmp(const string& filename){
-    const string keyStr = "Xmp.darktable.colorlabels";
-    const string valStr = "0";
+    //const string keyStr = "Xmp.darktable.colorlabels";
+    //const string valStr = "0";
+    const string keyStr = "Xmp.lr.hierarchicalSubject";
+    const string valStr = "autoculled_sharpest";
 
     Exiv2::XmpProperties::registerNs("http://darktable.sf.net/", "darktable");
+    Exiv2::XmpProperties::registerNs("http://ns.adobe.com/lightroom/1.0/", "lr");
 
     Exiv2::XmpKey  key = Exiv2::XmpKey(keyStr);
     Exiv2::Value::AutoPtr value = Exiv2::Value::create(Exiv2::xmpText);
@@ -218,36 +221,38 @@ int main(int argc, char **argv){
         long time;
         struct tm tm;
 
-        //Open file
-        Exiv2::Image::AutoPtr image = Exiv2::ImageFactory::open(argv[i]);
+        try{
+            //Open file
+            Exiv2::Image::AutoPtr image = Exiv2::ImageFactory::open(argv[i]);
 
-        //Skip file if open fails
-        if(image.get() == 0){
-            continue;
-        }
+            //Skip file if open fails
+            if(image.get() == 0){
+                continue;
+            }
 
-        image->readMetadata();
-        Exiv2::ExifData& exif_data = image->exifData();
-        
-        //Skip if no exif data
-        if(exif_data.empty()){
-            continue;
-        }
-                
-        //Get datetime and convert to long
-        datetime = exif_data.findKey(Exiv2::ExifKey("Exif.Photo.DateTimeOriginal"))->toString();
-        strptime(datetime.c_str(),"%Y:%m:%d %H:%M:%S",&tm);
-        time = (long)mktime(&tm);
+            image->readMetadata();
+            Exiv2::ExifData& exif_data = image->exifData();
+            
+            //Skip if no exif data
+            if(exif_data.empty()){
+                continue;
+            }
+                    
+            //Get datetime and convert to long
+            datetime = exif_data.findKey(Exiv2::ExifKey("Exif.Photo.DateTimeOriginal"))->toString();
+            strptime(datetime.c_str(),"%Y:%m:%d %H:%M:%S",&tm);
+            time = (long)mktime(&tm);
 
-        //Multiply by 100 and add subsecs
-        time *= 100;
-        time += stoi(exif_data.findKey(Exiv2::ExifKey("Exif.Photo.SubSecTimeOriginal"))->toString());
+            //Multiply by 100 and add subsecs
+            time *= 100;
+            time += stoi(exif_data.findKey(Exiv2::ExifKey("Exif.Photo.SubSecTimeOriginal"))->toString());
 
-        if(time - lasttime > 50){
-            bursts.emplace_back();
-        }
-        bursts.back().addFileName(argv[i]);  
-        lasttime = time;
+            if(time - lasttime > 50){
+                bursts.emplace_back();
+            }
+            bursts.back().addFileName(argv[i]);  
+            lasttime = time;
+        }catch(Exiv2::BasicError<char> e){}
     }
 
     for(auto& i: bursts){
