@@ -1,6 +1,19 @@
+Build
+=====
+
 Run make
+
+libexiv2 and libjpeg[-turbo] is required, as well as a C++11 compatible compiler
+
+
+Running
+=======
 
 ./autocull [RAW Files]
 
 The higher the number, the more high frequency energy is in the image, and the
 image should be theoretically sharper.
+
+The tag autoculled_sharpest will be applied to the image in the  burst demed
+sharpest.
+
